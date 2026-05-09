@@ -75,6 +75,9 @@ curl -X POST http://127.0.0.1:8000/verify-code \
 ## 注意
 
 - `.env` 已在 `.gitignore` 里，**生产凭据不要往仓库里丢**。
-- 上游域名 `eworr.<TLD>` 的 TLD 由 app 启动时调 `platform/service/usage` 动态拿，
-  目前看到的是 `onetooutlimitss.com`。换了就改 `UPSTREAM_BASE_URL`。
+- 上游 URL 存在 `app_config.upstream_base_url`，**换 TLD 不需要重启**：
+  ```sql
+  UPDATE app_config SET config_value='https://eworr.<新TLD>/streamservice' WHERE config_key='upstream_base_url';
+  ```
+  `.env` 里的 `UPSTREAM_BASE_URL` 仅作为 seed/fallback——首次启动时如果 `app_config` 里没行就用这个值播种。
 - 静态机型暂时锁定 Xiaomi MIX 2S / Android 10。需要按机型池随机时改 `app/devices.py`。

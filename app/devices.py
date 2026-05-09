@@ -53,6 +53,7 @@ async def get_or_create_device(
     session_factory: async_sessionmaker,
     http: httpx.AsyncClient,
     phone: str,
+    base_url: str,
 ) -> dict[str, Any]:
     """Return a ready-to-use device envelope for *phone*.
 
@@ -84,7 +85,7 @@ async def get_or_create_device(
         if not row.osghu:
             envelope = device_to_envelope(row)
             osghu = await upstream.apparatus_make(
-                http, envelope, android_id=row.android_id, gaid=row.gaid
+                http, base_url, envelope, android_id=row.android_id, gaid=row.gaid
             )
             row.osghu = osghu
             await session.commit()

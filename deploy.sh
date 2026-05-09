@@ -1,4 +1,6 @@
 #!/bin/bash
+#生产webhook
+#https://54.179.197.66:19797/hook?access_key=uhumxaXU7ewNlquEWhKBRRddFRZvBeteKxiLv7rrSdaCd8UX
 # MMSMS 宝塔 Webhook 一键部署脚本
 #
 # 用法: ./deploy.sh

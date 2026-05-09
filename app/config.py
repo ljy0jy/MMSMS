@@ -17,7 +17,11 @@ from dotenv import load_dotenv
 # stays on .env. Defaults to .env when the var is unset.
 load_dotenv(os.getenv("ENV_FILE", ".env"))
 
-BASE_URL = os.getenv("UPSTREAM_BASE_URL", "https://eworr.onetooutlimitss.com/streamservice")
+# Fallback used to seed app_config on first boot and as a safety net if the DB
+# row goes missing. The runtime source of truth is the DB row
+# app_config.upstream_base_url — update it with a plain UPDATE to point to a
+# new TLD without redeploying.
+BASE_URL_FALLBACK = os.getenv("UPSTREAM_BASE_URL", "https://eworr.onetooutlimitss.com/streamservice")
 
 UPSTREAM_VERIFY = os.getenv("UPSTREAM_VERIFY", "false").lower() in {"1", "true", "yes", "on"}
 
