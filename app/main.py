@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.4.0", lifespan=lifespan)
 
 
 class VerifyRequest(BaseModel):
@@ -50,8 +50,13 @@ class SendCodeRequest(BaseModel):
 
 class VerifyCodeRequest(BaseModel):
     phone: str = Field(..., min_length=1, description="手机号")
-    code: str = Field(..., min_length=1, description="收到的验证码")
-    password: str = Field(..., min_length=1, description="一并设置的登录密码")
+    code: str = Field(..., min_length=1, description="收到的验证码（与 send-code 时上游返回的 twwxfuya 比对）")
+
+
+class VerifyCodeResponse(BaseModel):
+    code: int    # 0=match, 7104=mismatch, -1=never sent, -2=expired
+    msg: str
+    success: bool
 
 
 class UpstreamResponse(BaseModel):
@@ -117,10 +122,11 @@ async def send_code(req: SendCodeRequest) -> UpstreamResponse:
     """触发上游 text-user/transfer 给手机号发一条短信验证码。
 
     Mimics the apk: call existence/verify-user-account first, then
-    text-user/transfer. The pre-call appears to be required for the upstream
-    to actually deliver the SMS — without it the server returns success but
-    silently drops the message. We discard verify's response and only return
-    the transfer result to the caller.
+    text-user/transfer. The pre-call is required for the upstream to actually
+    deliver the SMS — without it the server returns success but silently drops
+    the message. The twwxfuya returned by transfer is the verification code
+    itself; we persist it to phone_devices.last_code so /verify-code can
+    validate locally.
     """
     device, base_url = await _resolve_request_ctx(req.phone)
     await _call_or_502(
@@ -129,16 +135,20 @@ async def send_code(req: SendCodeRequest) -> UpstreamResponse:
     decoded = await _call_or_502(
         upstream.send_sms_code(app.state.http, base_url, req.phone, req.channel, device)
     )
+
+    issued = (decoded.get("atkjtu") or {}).get("twwxfuya")
+    if issued is not None:
+        await devices.record_code(app.state.db_session, req.phone, str(issued))
+
     return _wrap(decoded)
 
 
-@app.post("/verify-code", response_model=UpstreamResponse)
-async def verify_code(req: VerifyCodeRequest) -> UpstreamResponse:
-    """通过 register/clientSignUp 校验短信验证码（顺带完成注册并设置密码）。"""
-    device, base_url = await _resolve_request_ctx(req.phone)
-    decoded = await _call_or_502(
-        upstream.verify_sms_code(
-            app.state.http, base_url, req.phone, req.code, req.password, device
-        )
-    )
-    return _wrap(decoded)
+@app.post("/verify-code", response_model=VerifyCodeResponse)
+async def verify_code(req: VerifyCodeRequest) -> VerifyCodeResponse:
+    """本地校验：拿 send-code 时上游返回的 twwxfuya 跟 caller 喂回的 code 比对。
+
+    不再调用上游 register/clientSignUp，所以**不会真注册账号**。校验成功只代表
+    "此手机号 10 分钟内拿到的验证码与传入值一致"，业务侧再决定要不要走真注册。
+    """
+    code, msg = await devices.match_code(app.state.db_session, req.phone, req.code)
+    return VerifyCodeResponse(code=code, msg=msg, success=code == 0)

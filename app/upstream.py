@@ -98,18 +98,3 @@ async def send_sms_code(
     )
 
 
-async def verify_sms_code(
-    client: httpx.AsyncClient,
-    base_url: str,
-    phone: str,
-    code: str,
-    password: str,
-    device_envelope: dict[str, Any],
-) -> dict[str, Any]:
-    return await call(
-        client,
-        base_url,
-        "register/clientSignUp",
-        {"semvjnx": phone, "bnn": code, "xpuesdg": password},
-        device_envelope,
-    )

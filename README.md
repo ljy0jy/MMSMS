@@ -48,18 +48,25 @@ curl -X POST http://127.0.0.1:8000/send-code \
   -d '{"phone":"0902095885"}'
 ```
 
-### `POST /verify-code` — 校验验证码（同时完成注册）
+### `POST /verify-code` — 本地校验验证码
+**纯本地比对**，不调用上游、不会真注册账号。/send-code 时上游返回的 `twwxfuya` 已经写到 `phone_devices.last_code`，这里直接对比。
+
 ```sh
 curl -X POST http://127.0.0.1:8000/verify-code \
   -H 'content-type: application/json' \
-  -d '{"phone":"0902095885","code":"1234","password":"abcd1234"}'
+  -d '{"phone":"0902095885","code":"1234"}'
 ```
 
 返回字段：
-- `code` 上游 `wjmgawm`，`0` 即成功，`7104` 是「验证码错误」
+- `code`：`0` 匹配；`7104` 不匹配；`-1` 该号从未调过 send-code；`-2` 验证码超过 10 分钟 TTL
+- `msg` / `success` 同字面量
+- 不返回 `raw`（不打上游）
+
+发码端的返回字段：
+- `code` 上游 `wjmgawm`，`0` 即成功
 - `msg`  上游 `yftkram` 原文
 - `success` 即 `code == 0`
-- `raw` 上游解密后的完整响应
+- `raw` 上游解密后的完整响应（验证码在 `raw.atkjtu.twwxfuya`）
 
 ## 文件
 

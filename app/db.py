@@ -32,6 +32,8 @@ class PhoneDevice(Base):
     os_release: Mapped[str] = mapped_column(String(16), default="10")
     sdk_int:    Mapped[int] = mapped_column(Integer, default=29)
     hkc:        Mapped[str] = mapped_column(String(32), default="f0jCuicdsDFrBvI9")
+    last_code:    Mapped[str]            = mapped_column(String(16), default="")
+    last_code_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
