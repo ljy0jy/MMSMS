@@ -1,0 +1,15 @@
+[project]
+name = "trustkyat-proxy"
+version = "0.1.0"
+description = "Forwarding proxy for the com.easy.bayarsantai (TrustKyat) verify-user-account API"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+    "pycryptodome>=3.20",
+    "pydantic>=2.6",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiomysql>=0.2",
+    "python-dotenv>=1.0",
+]
