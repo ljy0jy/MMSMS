@@ -1,4 +1,4 @@
-"""Thin client around the TrustKyat upstream API.
+"""Thin client around the upstream SMS / account API.
 
 Every call carries a per-phone ``akmcchi`` device envelope built by
 ``app.devices.device_to_envelope``.

@@ -1,7 +1,7 @@
 [project]
-name = "trustkyat-proxy"
-version = "0.1.0"
-description = "Forwarding proxy for the com.easy.bayarsantai (TrustKyat) verify-user-account API"
+name = "mmsms-proxy"
+version = "0.2.0"
+description = "FastAPI SMS proxy: per-phone device fingerprints, MySQL-backed, talks to com.easy.bayarsantai upstream"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",

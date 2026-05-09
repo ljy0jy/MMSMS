@@ -38,3 +38,10 @@ def make_engine_and_session() -> tuple:
     engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
     session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     return engine, session
+
+
+async def init_schema(engine) -> None:
+    """Create the phone_devices table if it doesn't exist. The database itself must
+    already exist — we don't try CREATE DATABASE since that needs elevated perms."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

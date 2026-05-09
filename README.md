@@ -1,14 +1,29 @@
-# trustkyat-proxy
+# mmsms-proxy
 
-FastAPI 中转层，封装 com.easy.bayarsantai (TrustKyat) 的 `existence/verify-user-account` 接口。
-传手机号过来，这边自动加密 / 加设备指纹 / 调上游 / 解密响应。
+FastAPI 中转层，封装 `com.easy.bayarsantai` 的账号核验、发短信验证码、注册三个接口。
+传手机号过来，这边自动**为每个号码生成独立设备指纹**、加密 / 调上游 / 解密响应。
+
+## 特性
+
+- 每个手机号在 MySQL 里维护一份独立设备指纹（`android_id` / GAID / `osghu`）
+- 首次出现的手机号会调上游 `user/construct/apparatus-make` 拿到与该指纹绑定的 `osghu`
+- `send-code` 与 `verify-code` 复用同一台虚拟设备，重启服务后也不丢
 
 ## 安装
 
 ```sh
 cd proxy
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install -r requirements.txt
+cp .env.example .env
+# 编辑 .env，填上 DATABASE_URL
+```
+
+数据库本身（默认库名 `mmsms`）需要预先建好；表 `phone_devices` 在服务首次启动时自动 `CREATE TABLE IF NOT EXISTS`。
+
+```sql
+-- 一次性手动跑：
+CREATE DATABASE mmsms DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
 ## 启动
@@ -51,13 +66,15 @@ curl -X POST http://127.0.0.1:8000/verify-code \
 | 文件 | 作用 |
 |---|---|
 | `app/codec.py`    | `ky_data` 字段的 AES/CBC/PKCS5 加解密（key/iv 都是 apk 里硬编的） |
-| `app/config.py`   | 上游 URL、UA、设备指纹常量；可通过环境变量 `UPSTREAM_BASE_URL` 覆盖域名 |
-| `app/upstream.py` | 把 plaintext 包成完整 envelope（`vhhwl` + `dcvnq` + `vswyd` + `akmcchi`），调上游 |
-| `app/main.py`     | FastAPI 入口，单 `POST /verify` 接口 |
+| `app/config.py`   | 上游 URL / 静态字段 / DB URL；从 `.env` 读取 |
+| `app/db.py`       | SQLAlchemy async + `phone_devices` 模型 |
+| `app/devices.py`  | 每个手机号生成 / bootstrap / 持久化设备指纹 |
+| `app/upstream.py` | 把 plaintext 包成完整 envelope，调上游 |
+| `app/main.py`     | FastAPI 入口 |
 
 ## 注意
 
-- `app/config.py` 里的 `DEVICE` 块是从一台真实 Xiaomi MIX 2S 抓包得到的。
-  如果服务端开始拒，把这个块换成另一台机器抓的就行（GAID、`osghu`、`lpyblk`、`mthwtv` 都是设备相关的）。
+- `.env` 已在 `.gitignore` 里，**生产凭据不要往仓库里丢**。
 - 上游域名 `eworr.<TLD>` 的 TLD 由 app 启动时调 `platform/service/usage` 动态拿，
-  目前看到的是 `onetooutlimitss.com`，如果换了就改 `BASE_URL` 或设环境变量。
+  目前看到的是 `onetooutlimitss.com`。换了就改 `UPSTREAM_BASE_URL`。
+- 静态机型暂时锁定 Xiaomi MIX 2S / Android 10。需要按机型池随机时改 `app/devices.py`。

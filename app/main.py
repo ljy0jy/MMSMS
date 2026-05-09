@@ -10,13 +10,14 @@ from pydantic import BaseModel, Field
 
 from . import devices, upstream
 from .config import UPSTREAM_VERIFY
-from .db import make_engine_and_session
+from .db import init_schema, make_engine_and_session
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http = httpx.AsyncClient(http2=False, timeout=20.0, verify=UPSTREAM_VERIFY)
     engine, session_factory = make_engine_and_session()
+    await init_schema(engine)
     app.state.db_engine = engine
     app.state.db_session = session_factory
     try:
@@ -26,7 +27,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="TrustKyat proxy", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.2.0", lifespan=lifespan)
 
 
 class VerifyRequest(BaseModel):
