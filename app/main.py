@@ -11,20 +11,10 @@ from pydantic import BaseModel, Field
 from . import devices, upstream
 from .config import BASE_URL_FALLBACK, UPSTREAM_PROXY_API, UPSTREAM_VERIFY
 from .db import get_config, init_schema, make_engine_and_session, seed_config
-from .proxy_provider import ProxiedClient, ProxyProvider
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if UPSTREAM_PROXY_API:
-        provider = ProxyProvider(UPSTREAM_PROXY_API)
-        app.state.http = ProxiedClient(
-            provider, http2=False, timeout=20.0, verify=UPSTREAM_VERIFY,
-        )
-    else:
-        app.state.http = httpx.AsyncClient(
-            http2=False, timeout=20.0, verify=UPSTREAM_VERIFY,
-        )
     engine, session_factory = make_engine_and_session()
     await init_schema(engine)
     await seed_config(engine, "upstream_base_url", BASE_URL_FALLBACK)
@@ -33,11 +23,30 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        await app.state.http.aclose()
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.7.0", lifespan=lifespan)
+
+
+@asynccontextmanager
+async def _client_for_phone(phone: str):
+    """Yield an ``httpx.AsyncClient`` whose outgoing IP is bound to *phone*.
+
+    When ``UPSTREAM_PROXY_API`` is set, the proxy is resolved via
+    ``devices.acquire_proxy_for_phone`` (cached per phone, rotated on expiry).
+    When unset, a direct-connection client is yielded so local dev still works.
+    """
+    proxy_url: str | None = None
+    if UPSTREAM_PROXY_API:
+        proxy_url = await devices.acquire_proxy_for_phone(
+            app.state.db_session, phone, UPSTREAM_PROXY_API
+        )
+    kwargs: dict[str, Any] = dict(http2=False, timeout=20.0, verify=UPSTREAM_VERIFY)
+    if proxy_url:
+        kwargs["proxy"] = proxy_url
+    async with httpx.AsyncClient(**kwargs) as client:
+        yield client
 
 
 class VerifyRequest(BaseModel):
@@ -90,18 +99,19 @@ def _wrap(decoded: dict[str, Any]) -> UpstreamResponse:
     return UpstreamResponse(code=code, msg=msg, success=code == 0, raw=decoded)
 
 
-async def _resolve_request_ctx(phone: str) -> tuple[dict[str, Any], str]:
-    """Per-request setup: pull base_url from app_config, resolve device envelope."""
+async def _resolve_base_url() -> str:
     sf = app.state.db_session
     async with sf() as session:
-        base_url = await get_config(session, "upstream_base_url", BASE_URL_FALLBACK)
+        return await get_config(session, "upstream_base_url", BASE_URL_FALLBACK)
+
+
+async def _resolve_device(http: httpx.AsyncClient, phone: str, base_url: str) -> dict[str, Any]:
     try:
-        device = await devices.get_or_create_device(sf, app.state.http, phone, base_url)
+        return await devices.get_or_create_device(app.state.db_session, http, phone, base_url)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"upstream error during device bootstrap: {e}") from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
-    return device, base_url
 
 
 def _call_or_502(coro):
@@ -120,10 +130,12 @@ async def health() -> dict[str, str]:
 
 @app.post("/verify", response_model=VerifyResponse)
 async def verify(req: VerifyRequest) -> VerifyResponse:
-    device, base_url = await _resolve_request_ctx(req.phone)
-    decoded = await _call_or_502(
-        upstream.verify_user_account(app.state.http, base_url, req.phone, req.region, device)
-    )
+    base_url = await _resolve_base_url()
+    async with _client_for_phone(req.phone) as http:
+        device = await _resolve_device(http, req.phone, base_url)
+        decoded = await _call_or_502(
+            upstream.verify_user_account(http, base_url, req.phone, req.region, device)
+        )
     code = int(decoded.get("wjmgawm", -1))
     msg = str(decoded.get("yftkram", ""))
 
@@ -146,14 +158,20 @@ async def send_code(req: SendCodeRequest) -> SendCodeResponse:
     itself; we persist it as a verification_attempts row keyed by a fresh
     trace_id (uuid4), and surface that trace_id in the response so the caller
     can pass it back to /verify-code without re-supplying the phone number.
+
+    All three upstream calls (apparatus-make if needed, verify-user-account,
+    text-user/transfer) egress through the *same* phone-scoped proxy IP
+    resolved by ``_client_for_phone``.
     """
-    device, base_url = await _resolve_request_ctx(req.phone)
-    await _call_or_502(
-        upstream.verify_user_account(app.state.http, base_url, req.phone, 1, device)
-    )
-    decoded = await _call_or_502(
-        upstream.send_sms_code(app.state.http, base_url, req.phone, req.channel, device)
-    )
+    base_url = await _resolve_base_url()
+    async with _client_for_phone(req.phone) as http:
+        device = await _resolve_device(http, req.phone, base_url)
+        await _call_or_502(
+            upstream.verify_user_account(http, base_url, req.phone, 1, device)
+        )
+        decoded = await _call_or_502(
+            upstream.send_sms_code(http, base_url, req.phone, req.channel, device)
+        )
 
     issued = (decoded.get("atkjtu") or {}).get("twwxfuya")
     trace_id: str | None = None
