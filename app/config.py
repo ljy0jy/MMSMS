@@ -25,6 +25,13 @@ BASE_URL_FALLBACK = os.getenv("UPSTREAM_BASE_URL", "https://eworr.onetooutlimits
 
 UPSTREAM_VERIFY = os.getenv("UPSTREAM_VERIFY", "false").lower() in {"1", "true", "yes", "on"}
 
+# Outbound HTTP proxy provider: API endpoint that returns a fresh "host:port"
+# (plain text, one per line). Set to empty string to disable proxying.
+UPSTREAM_PROXY_API = os.getenv(
+    "UPSTREAM_PROXY_API",
+    "https://white.novproxy.com/white/api?region=US&num=1&time=10&format=1&type=txt",
+)
+
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 USER_AGENT = "okhttp/4.10.0"

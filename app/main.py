@@ -9,13 +9,22 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from . import devices, upstream
-from .config import BASE_URL_FALLBACK, UPSTREAM_VERIFY
+from .config import BASE_URL_FALLBACK, UPSTREAM_PROXY_API, UPSTREAM_VERIFY
 from .db import get_config, init_schema, make_engine_and_session, seed_config
+from .proxy_provider import ProxiedClient, ProxyProvider
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.http = httpx.AsyncClient(http2=False, timeout=20.0, verify=UPSTREAM_VERIFY)
+    if UPSTREAM_PROXY_API:
+        provider = ProxyProvider(UPSTREAM_PROXY_API)
+        app.state.http = ProxiedClient(
+            provider, http2=False, timeout=20.0, verify=UPSTREAM_VERIFY,
+        )
+    else:
+        app.state.http = httpx.AsyncClient(
+            http2=False, timeout=20.0, verify=UPSTREAM_VERIFY,
+        )
     engine, session_factory = make_engine_and_session()
     await init_schema(engine)
     await seed_config(engine, "upstream_base_url", BASE_URL_FALLBACK)
@@ -28,7 +37,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.6.0", lifespan=lifespan)
 
 
 class VerifyRequest(BaseModel):
