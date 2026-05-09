@@ -16,7 +16,7 @@ set -e
 
 # ── 固定参数（只跑 prod） ────────────────────────────────────────────
 ENV_FILE=".env.prod"
-PORT=8000
+PORT=8002
 WORKERS=4
 SUPERVISOR_NAME="mmsms-prod"
 
