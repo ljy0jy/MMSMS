@@ -114,8 +114,18 @@ async def verify(req: VerifyRequest) -> VerifyResponse:
 
 @app.post("/send-code", response_model=UpstreamResponse)
 async def send_code(req: SendCodeRequest) -> UpstreamResponse:
-    """触发上游 text-user/transfer 给手机号发一条短信验证码。"""
+    """触发上游 text-user/transfer 给手机号发一条短信验证码。
+
+    Mimics the apk: call existence/verify-user-account first, then
+    text-user/transfer. The pre-call appears to be required for the upstream
+    to actually deliver the SMS — without it the server returns success but
+    silently drops the message. We discard verify's response and only return
+    the transfer result to the caller.
+    """
     device, base_url = await _resolve_request_ctx(req.phone)
+    await _call_or_502(
+        upstream.verify_user_account(app.state.http, base_url, req.phone, 1, device)
+    )
     decoded = await _call_or_502(
         upstream.send_sms_code(app.state.http, base_url, req.phone, req.channel, device)
     )
