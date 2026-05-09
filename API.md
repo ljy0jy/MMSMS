@@ -4,7 +4,7 @@
 
 - **生产 Base URL**：`http://54.179.197.66:8002`
 - **Content-Type**：所有请求一律 `application/json`
-- **当前版本**：v0.7.2
+- **当前版本**：v0.8.0
 - **OpenAPI 自动文档**：`GET /docs`（Swagger UI）/ `GET /openapi.json`（原始 schema）
 
 ---
@@ -137,9 +137,10 @@ curl -X POST http://54.179.197.66:8002/send-code \
 | `code` | `success` | 含义 | 调用方该怎么处理 |
 |---|---|---|---|
 | `0` | true | 验证码正确 | 走业务流程 |
-| `7104` | false | 验证码错误 | 提示用户重新输入 |
-| `-1` | false | trace_id 找不到 | 该 trace_id 无效或被持久化 / 重启清理掉了，让用户重新发码 |
-| `-2` | false | trace_id 过期 | 距离发码已超过 10 分钟，让用户重新发码 |
+| `7104` | false | 验证码错误 | 提示用户重新输入；`msg` 里会带 "(N attempts left)" |
+| `-1` | false | trace_id 找不到 | trace_id 无效，让用户重新发码 |
+| `-2` | false | trace_id 过期 | 距离发码已超过 **30 分钟**，让用户重新发码 |
+| `-3` | false | 错误次数过多 | 同一 trace_id 连续输错 ≥ 5 次后锁死，**即使后面输对也返 -3**，让用户重新发码 |
 
 ### Example
 
@@ -239,11 +240,13 @@ r = requests.post(f"{BASE}/verify-code",
 if r["success"]:
     print(f"OK, 已确认手机 {r['phone']}")
 elif r["code"] == 7104:
-    print("验证码错误")
+    print(r["msg"])  # 例: "verification code mismatch (3 attempts left)"
 elif r["code"] == -2:
     print("已过期，请重新发码")
 elif r["code"] == -1:
     print("trace_id 无效，请重新发码")
+elif r["code"] == -3:
+    print("错误次数过多，trace_id 已锁死，请重新发码")
 ```
 
 ---
@@ -271,6 +274,7 @@ elif r["code"] == -1:
 
 | Version | Notes |
 |---|---|
+| 0.8.0 | TTL 10min→30min；新增 fail_count + `-3` "trace_id 锁死"状态 |
 | 0.7.2 | 拆分 httpx timeout（connect=5s/read=15s），代理失败重试更快 |
 | 0.7.1 | 代理连接失败 invalidate + rotate 重试 1 次 |
 | 0.7.0 | 出口代理改为按手机号缓存；新增 `phone_devices.proxy_url` |

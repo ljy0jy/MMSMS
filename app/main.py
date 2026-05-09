@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.7.2", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.8.0", lifespan=lifespan)
 
 
 @asynccontextmanager
@@ -78,7 +78,7 @@ class VerifyCodeRequest(BaseModel):
 
 
 class VerifyCodeResponse(BaseModel):
-    code: int    # 0=match, 7104=mismatch, -1=trace_id not found, -2=expired
+    code: int    # 0=match, 7104=mismatch, -1=trace_id not found, -2=expired, -3=too many wrong tries
     msg: str
     success: bool
     phone: str | None = None  # echoed from the matched attempt; null when -1

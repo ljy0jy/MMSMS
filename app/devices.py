@@ -22,8 +22,9 @@ from .config import HKC_CONST, STATIC_DEVICE_DEFAULTS
 from .db import PhoneDevice, VerificationAttempt
 from .proxy_provider import fetch_proxy_url
 
-CODE_TTL_SECONDS = 600  # 10 min — local TTL on stored attempts
+CODE_TTL_SECONDS = 1800  # 30 min — local TTL on stored attempts
 PROXY_TTL_SECONDS = 480  # 8 min — provider rotates every ~10 min, leave 2 min slack
+EXHAUST_AFTER = 5        # /verify-code rejects further attempts on a trace_id once it has this many wrong tries
 
 
 def _random_android_id() -> str:
@@ -172,6 +173,7 @@ async def match_by_trace(
     trace_id: str,
     code: str,
     ttl_seconds: int = CODE_TTL_SECONDS,
+    exhaust_after: int = EXHAUST_AFTER,
 ) -> tuple[int, str, str]:
     """Compare *code* against the attempt identified by *trace_id*.
 
@@ -180,15 +182,25 @@ async def match_by_trace(
         7104  — mismatch (mirrors upstream's "wrong code" code)
         -1    — trace_id not found (never issued, or wrong id)
         -2    — attempt expired (older than ttl_seconds)
-    ``phone`` is "" when result_code is -1, otherwise echoes the stored phone.
+        -3    — too many failed attempts (>= exhaust_after); trace_id is locked
+    Wrong attempts increment fail_count; once it hits exhaust_after every
+    subsequent call returns -3, even with the correct code. The caller is
+    expected to ask the user to /send-code again.
     """
     async with session_factory() as session:
         row = await session.get(VerificationAttempt, trace_id)
         if row is None:
             return -1, "trace_id not found", ""
+        if row.fail_count >= exhaust_after:
+            return -3, f"too many failed attempts ({row.fail_count}); request a new code", row.phone
         age = datetime.utcnow() - row.created_at
         if age > timedelta(seconds=ttl_seconds):
             return -2, f"verification code expired ({int(age.total_seconds())}s old)", row.phone
         if str(code).strip() != row.code:
-            return 7104, "verification code mismatch", row.phone
+            row.fail_count += 1
+            await session.commit()
+            if row.fail_count >= exhaust_after:
+                return -3, "too many failed attempts; request a new code", row.phone
+            remaining = exhaust_after - row.fail_count
+            return 7104, f"verification code mismatch ({remaining} attempts left)", row.phone
         return 0, "success", row.phone
