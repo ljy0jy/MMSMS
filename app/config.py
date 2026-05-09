@@ -13,7 +13,9 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Honor ENV_FILE so deploy.sh can pick .env.prod on the server while local dev
+# stays on .env. Defaults to .env when the var is unset.
+load_dotenv(os.getenv("ENV_FILE", ".env"))
 
 BASE_URL = os.getenv("UPSTREAM_BASE_URL", "https://eworr.onetooutlimitss.com/streamservice")
 
