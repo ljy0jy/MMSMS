@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.7.1", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.7.2", lifespan=lifespan)
 
 
 @asynccontextmanager
@@ -42,7 +42,13 @@ async def _client_for_phone(phone: str):
         proxy_url = await devices.acquire_proxy_for_phone(
             app.state.db_session, phone, UPSTREAM_PROXY_API
         )
-    kwargs: dict[str, Any] = dict(http2=False, timeout=20.0, verify=UPSTREAM_VERIFY)
+    # connect=5s so a dead proxy fails fast (the retry path then rotates and tries
+    # again); read=15s leaves the actual upstream call enough headroom.
+    kwargs: dict[str, Any] = dict(
+        http2=False,
+        timeout=httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0),
+        verify=UPSTREAM_VERIFY,
+    )
     if proxy_url:
         kwargs["proxy"] = proxy_url
     async with httpx.AsyncClient(**kwargs) as client:
