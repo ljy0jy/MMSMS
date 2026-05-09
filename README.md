@@ -48,25 +48,27 @@ curl -X POST http://127.0.0.1:8000/send-code \
   -d '{"phone":"0902095885"}'
 ```
 
+返回字段：
+- `code` 上游 `wjmgawm`，`0` 即成功
+- `msg` / `success` 同字面量
+- **`trace_id`**：本次发码的 uuid4，**调用方必须保存**给后续 /verify-code 用
+- `raw`：上游解密后的完整响应（验证码在 `raw.atkjtu.twwxfuya`，跟手机收到的 SMS 一致）
+
+副作用：服务端真的下发短信；本地 DB `verification_attempts` 插入一行（trace_id PK）。
+
 ### `POST /verify-code` — 本地校验验证码
-**纯本地比对**，不调用上游、不会真注册账号。/send-code 时上游返回的 `twwxfuya` 已经写到 `phone_devices.last_code`，这里直接对比。
+**纯本地比对**，不调用上游、不会真注册账号。
 
 ```sh
 curl -X POST http://127.0.0.1:8000/verify-code \
   -H 'content-type: application/json' \
-  -d '{"phone":"0902095885","code":"1234"}'
+  -d '{"trace_id":"<send-code 返回的 trace_id>","code":"1234"}'
 ```
 
 返回字段：
-- `code`：`0` 匹配；`7104` 不匹配；`-1` 该号从未调过 send-code；`-2` 验证码超过 10 分钟 TTL
-- `msg` / `success` 同字面量
-- 不返回 `raw`（不打上游）
-
-发码端的返回字段：
-- `code` 上游 `wjmgawm`，`0` 即成功
-- `msg`  上游 `yftkram` 原文
+- `code`：`0` 匹配 / `7104` 不匹配 / `-1` trace_id 找不到 / `-2` 超过 10 分钟 TTL
 - `success` 即 `code == 0`
-- `raw` 上游解密后的完整响应（验证码在 `raw.atkjtu.twwxfuya`）
+- `phone`：匹配到的 attempt 对应手机号（仅 `code != -1` 时返回）
 
 ## 文件
 

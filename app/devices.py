@@ -1,8 +1,10 @@
-"""Per-phone device fingerprint: generate locally, bootstrap ``osghu`` from upstream, persist.
+"""Per-phone device fingerprint + per-attempt verification record.
 
-Also keeps the last verification code issued by the upstream for the phone, so
-``/verify-code`` can validate locally without re-hitting upstream (and without
-inadvertently registering an account via ``register/clientSignUp``).
+Two responsibilities:
+1. Generate / look up the device envelope used in upstream calls (one row per phone).
+2. Persist each issued verification code keyed by a fresh trace_id so /verify-code
+   can validate locally without re-hitting upstream (and without inadvertently
+   registering an account via ``register/clientSignUp``).
 """
 from __future__ import annotations
 
@@ -17,9 +19,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from . import upstream
 from .config import HKC_CONST, STATIC_DEVICE_DEFAULTS
-from .db import PhoneDevice
+from .db import PhoneDevice, VerificationAttempt
 
-CODE_TTL_SECONDS = 600  # 10 min — local TTL on the issued twwxfuya
+CODE_TTL_SECONDS = 600  # 10 min — local TTL on stored attempts
 
 
 def _random_android_id() -> str:
@@ -102,41 +104,43 @@ async def get_or_create_device(
         return device_to_envelope(row)
 
 
-async def record_code(session_factory: async_sessionmaker, phone: str, code: str) -> None:
-    """Persist the latest twwxfuya issued by upstream so /verify-code can compare locally.
+async def record_attempt(
+    session_factory: async_sessionmaker, phone: str, code: str
+) -> str:
+    """Persist a verification attempt and return its trace_id (uuid4).
 
-    No-op if the phone row doesn't exist (caller should have ensured it does).
+    Caller surfaces the trace_id in the /send-code response; /verify-code
+    uses it to look the row back up.
     """
+    trace_id = str(uuid.uuid4())
     async with session_factory() as session:
-        row = await session.get(PhoneDevice, phone)
-        if row is None:
-            return
-        row.last_code = code
-        row.last_code_at = datetime.utcnow()
+        session.add(VerificationAttempt(trace_id=trace_id, phone=phone, code=code))
         await session.commit()
+    return trace_id
 
 
-async def match_code(
+async def match_by_trace(
     session_factory: async_sessionmaker,
-    phone: str,
+    trace_id: str,
     code: str,
     ttl_seconds: int = CODE_TTL_SECONDS,
-) -> tuple[int, str]:
-    """Compare *code* against the last issued twwxfuya.
+) -> tuple[int, str, str]:
+    """Compare *code* against the attempt identified by *trace_id*.
 
-    Returns ``(code, msg)`` where the int mirrors the upstream convention:
-        0     — match
-        7104  — mismatch (same as upstream's "wrong code" code)
-        -1    — no code on file (caller never invoked /send-code)
-        -2    — last code expired (older than ttl_seconds)
+    Returns ``(result_code, msg, phone)``:
+        0     — match (phone is the one this trace_id was issued for)
+        7104  — mismatch (mirrors upstream's "wrong code" code)
+        -1    — trace_id not found (never issued, or wrong id)
+        -2    — attempt expired (older than ttl_seconds)
+    ``phone`` is "" when result_code is -1, otherwise echoes the stored phone.
     """
     async with session_factory() as session:
-        row = await session.get(PhoneDevice, phone)
-        if row is None or not row.last_code or row.last_code_at is None:
-            return -1, "no verification code on file for this phone"
-        age = datetime.utcnow() - row.last_code_at
+        row = await session.get(VerificationAttempt, trace_id)
+        if row is None:
+            return -1, "trace_id not found", ""
+        age = datetime.utcnow() - row.created_at
         if age > timedelta(seconds=ttl_seconds):
-            return -2, f"verification code expired ({int(age.total_seconds())}s old)"
-        if str(code).strip() != row.last_code:
-            return 7104, "verification code mismatch"
-        return 0, "success"
+            return -2, f"verification code expired ({int(age.total_seconds())}s old)", row.phone
+        if str(code).strip() != row.code:
+            return 7104, "verification code mismatch", row.phone
+        return 0, "success", row.phone

@@ -32,8 +32,6 @@ class PhoneDevice(Base):
     os_release: Mapped[str] = mapped_column(String(16), default="10")
     sdk_int:    Mapped[int] = mapped_column(Integer, default=29)
     hkc:        Mapped[str] = mapped_column(String(32), default="f0jCuicdsDFrBvI9")
-    last_code:    Mapped[str]            = mapped_column(String(16), default="")
-    last_code_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -48,6 +46,20 @@ class AppConfig(Base):
     updated_at:   Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class VerificationAttempt(Base):
+    """One row per /send-code call that successfully issued a code.
+
+    The trace_id (uuid4) is what /verify-code identifies the attempt by,
+    decoupling the verify call from the phone number.
+    """
+    __tablename__ = "verification_attempts"
+
+    trace_id:   Mapped[str]      = mapped_column(String(40), primary_key=True)
+    phone:      Mapped[str]      = mapped_column(String(32), index=True)
+    code:       Mapped[str]      = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 def make_engine_and_session() -> tuple:

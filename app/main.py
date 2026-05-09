@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.5.0", lifespan=lifespan)
 
 
 class VerifyRequest(BaseModel):
@@ -49,20 +49,29 @@ class SendCodeRequest(BaseModel):
 
 
 class VerifyCodeRequest(BaseModel):
-    phone: str = Field(..., min_length=1, description="手机号")
-    code: str = Field(..., min_length=1, description="收到的验证码（与 send-code 时上游返回的 twwxfuya 比对）")
+    trace_id: str = Field(..., min_length=1, description="send-code 返回的 trace_id")
+    code: str = Field(..., min_length=1, description="收到的验证码")
 
 
 class VerifyCodeResponse(BaseModel):
-    code: int    # 0=match, 7104=mismatch, -1=never sent, -2=expired
+    code: int    # 0=match, 7104=mismatch, -1=trace_id not found, -2=expired
     msg: str
     success: bool
+    phone: str | None = None  # echoed from the matched attempt; null when -1
 
 
 class UpstreamResponse(BaseModel):
     code: int
     msg: str
     success: bool
+    raw: dict[str, Any]
+
+
+class SendCodeResponse(BaseModel):
+    code: int
+    msg: str
+    success: bool
+    trace_id: str | None = None   # null when upstream issued no fresh code (e.g., dedup)
     raw: dict[str, Any]
 
 
@@ -117,16 +126,17 @@ async def verify(req: VerifyRequest) -> VerifyResponse:
     return VerifyResponse(code=code, msg=msg, exists=exists, raw=decoded)
 
 
-@app.post("/send-code", response_model=UpstreamResponse)
-async def send_code(req: SendCodeRequest) -> UpstreamResponse:
+@app.post("/send-code", response_model=SendCodeResponse)
+async def send_code(req: SendCodeRequest) -> SendCodeResponse:
     """触发上游 text-user/transfer 给手机号发一条短信验证码。
 
     Mimics the apk: call existence/verify-user-account first, then
     text-user/transfer. The pre-call is required for the upstream to actually
     deliver the SMS — without it the server returns success but silently drops
     the message. The twwxfuya returned by transfer is the verification code
-    itself; we persist it to phone_devices.last_code so /verify-code can
-    validate locally.
+    itself; we persist it as a verification_attempts row keyed by a fresh
+    trace_id (uuid4), and surface that trace_id in the response so the caller
+    can pass it back to /verify-code without re-supplying the phone number.
     """
     device, base_url = await _resolve_request_ctx(req.phone)
     await _call_or_502(
@@ -137,18 +147,28 @@ async def send_code(req: SendCodeRequest) -> UpstreamResponse:
     )
 
     issued = (decoded.get("atkjtu") or {}).get("twwxfuya")
+    trace_id: str | None = None
     if issued is not None:
-        await devices.record_code(app.state.db_session, req.phone, str(issued))
+        trace_id = await devices.record_attempt(app.state.db_session, req.phone, str(issued))
 
-    return _wrap(decoded)
+    base = _wrap(decoded)
+    return SendCodeResponse(
+        code=base.code, msg=base.msg, success=base.success,
+        trace_id=trace_id, raw=base.raw,
+    )
 
 
 @app.post("/verify-code", response_model=VerifyCodeResponse)
 async def verify_code(req: VerifyCodeRequest) -> VerifyCodeResponse:
-    """本地校验：拿 send-code 时上游返回的 twwxfuya 跟 caller 喂回的 code 比对。
+    """本地校验：用 send-code 返回的 trace_id 找到对应 attempt，比对 code。
 
-    不再调用上游 register/clientSignUp，所以**不会真注册账号**。校验成功只代表
-    "此手机号 10 分钟内拿到的验证码与传入值一致"，业务侧再决定要不要走真注册。
+    不调用任何上游接口，**不会真注册账号**。校验成功只代表"该 trace_id 在 10
+    分钟内对应的验证码与传入 code 一致"，业务侧再决定要不要走真注册。
     """
-    code, msg = await devices.match_code(app.state.db_session, req.phone, req.code)
-    return VerifyCodeResponse(code=code, msg=msg, success=code == 0)
+    rc, msg, phone = await devices.match_by_trace(
+        app.state.db_session, req.trace_id, req.code
+    )
+    return VerifyCodeResponse(
+        code=rc, msg=msg, success=rc == 0,
+        phone=phone or None,
+    )
