@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.7.1", lifespan=lifespan)
 
 
 @asynccontextmanager
@@ -105,22 +105,36 @@ async def _resolve_base_url() -> str:
         return await get_config(session, "upstream_base_url", BASE_URL_FALLBACK)
 
 
-async def _resolve_device(http: httpx.AsyncClient, phone: str, base_url: str) -> dict[str, Any]:
+async def _with_proxy_retry(phone: str, fn) -> Any:
+    """Run *fn(http, base_url)* once. On a connection-layer failure (httpx
+    RequestError — proxy unreachable / dead / timeout / etc.), invalidate the
+    cached proxy for *phone* so the next acquire fetches a fresh IP, then run
+    *fn* one more time. HTTP 4xx/5xx responses from upstream are *not* retried
+    (rotating IPs won't fix a server-side rejection).
+    """
+    base_url = await _resolve_base_url()
+
+    async def _attempt():
+        async with _client_for_phone(phone) as http:
+            return await fn(http, base_url)
+
     try:
-        return await devices.get_or_create_device(app.state.db_session, http, phone, base_url)
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"upstream error during device bootstrap: {e}") from e
+        return await _attempt()
+    except httpx.RequestError as first_err:
+        await devices.invalidate_proxy_for_phone(app.state.db_session, phone)
+        try:
+            return await _attempt()
+        except httpx.RequestError as retry_err:
+            raise HTTPException(
+                status_code=502,
+                detail=f"upstream unreachable after proxy rotation: {retry_err!r}",
+            ) from retry_err
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"upstream error: {e}") from e
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"upstream error: {e}") from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
-
-
-def _call_or_502(coro):
-    async def _inner():
-        try:
-            return await coro
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"upstream error: {e}") from e
-    return _inner()
 
 
 @app.get("/health")
@@ -130,12 +144,15 @@ async def health() -> dict[str, str]:
 
 @app.post("/verify", response_model=VerifyResponse)
 async def verify(req: VerifyRequest) -> VerifyResponse:
-    base_url = await _resolve_base_url()
-    async with _client_for_phone(req.phone) as http:
-        device = await _resolve_device(http, req.phone, base_url)
-        decoded = await _call_or_502(
-            upstream.verify_user_account(http, base_url, req.phone, req.region, device)
+    async def _do(http: httpx.AsyncClient, base_url: str) -> dict[str, Any]:
+        device = await devices.get_or_create_device(
+            app.state.db_session, http, req.phone, base_url
         )
+        return await upstream.verify_user_account(
+            http, base_url, req.phone, req.region, device
+        )
+
+    decoded = await _with_proxy_retry(req.phone, _do)
     code = int(decoded.get("wjmgawm", -1))
     msg = str(decoded.get("yftkram", ""))
 
@@ -160,18 +177,21 @@ async def send_code(req: SendCodeRequest) -> SendCodeResponse:
     can pass it back to /verify-code without re-supplying the phone number.
 
     All three upstream calls (apparatus-make if needed, verify-user-account,
-    text-user/transfer) egress through the *same* phone-scoped proxy IP
-    resolved by ``_client_for_phone``.
+    text-user/transfer) egress through the *same* phone-scoped proxy IP. If
+    the connection drops at any point during the sequence (proxy died), the
+    cached proxy is invalidated and the entire sequence is retried once with
+    a fresh IP.
     """
-    base_url = await _resolve_base_url()
-    async with _client_for_phone(req.phone) as http:
-        device = await _resolve_device(http, req.phone, base_url)
-        await _call_or_502(
-            upstream.verify_user_account(http, base_url, req.phone, 1, device)
+    async def _do(http: httpx.AsyncClient, base_url: str) -> dict[str, Any]:
+        device = await devices.get_or_create_device(
+            app.state.db_session, http, req.phone, base_url
         )
-        decoded = await _call_or_502(
-            upstream.send_sms_code(http, base_url, req.phone, req.channel, device)
+        await upstream.verify_user_account(http, base_url, req.phone, 1, device)
+        return await upstream.send_sms_code(
+            http, base_url, req.phone, req.channel, device
         )
+
+    decoded = await _with_proxy_retry(req.phone, _do)
 
     issued = (decoded.get("atkjtu") or {}).get("twwxfuya")
     trace_id: str | None = None

@@ -84,6 +84,24 @@ async def _ensure_row(session_factory: async_sessionmaker, phone: str) -> None:
         await session.commit()
 
 
+async def invalidate_proxy_for_phone(
+    session_factory: async_sessionmaker,
+    phone: str,
+) -> None:
+    """Force the next ``acquire_proxy_for_phone`` to fetch a fresh IP.
+
+    Called after a request through the cached proxy fails at the connection
+    layer (proxy died mid-TTL). Cheaper than waiting for the TTL to expire.
+    """
+    async with session_factory() as session:
+        row = await session.get(PhoneDevice, phone)
+        if row is None:
+            return
+        row.proxy_url = ""
+        row.proxy_expires_at = None
+        await session.commit()
+
+
 async def acquire_proxy_for_phone(
     session_factory: async_sessionmaker,
     phone: str,
