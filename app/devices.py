@@ -26,6 +26,23 @@ CODE_TTL_SECONDS = 1800  # 30 min — local TTL on stored attempts
 PROXY_TTL_SECONDS = 480  # 8 min — provider rotates every ~10 min, leave 2 min slack
 EXHAUST_AFTER = 5        # /verify-code rejects further attempts on a trace_id once it has this many wrong tries
 
+# match_by_trace returns this when the attempt has no locally-stored code (the
+# upstream deduped /send-code and issued no fresh twwxfuya). The caller must
+# verify the code by actually hitting upstream register/clientSignUp instead of
+# comparing locally. Negative + out of the upstream's own code space so it can't
+# collide with a real upstream wjmgawm.
+VERIFY_UPSTREAM = -100
+
+
+def generate_password() -> str:
+    """A throwaway password for the clientSignUp fallback.
+
+    register/clientSignUp requires a password field; it is only consumed if the
+    code is correct (account gets registered with it). We never need to recall
+    it locally, so a fresh random one per attempt is fine. Shape mirrors the
+    apk sample (lowercase letters + digits, ~10 chars)."""
+    return secrets.token_hex(4) + "ky"
+
 
 def _random_android_id() -> str:
     """16 hex chars, matches what Settings.Secure.ANDROID_ID looks like on stock Android."""
@@ -183,6 +200,10 @@ async def match_by_trace(
         -1    — trace_id not found (never issued, or wrong id)
         -2    — attempt expired (older than ttl_seconds)
         -3    — too many failed attempts (>= exhaust_after); trace_id is locked
+        -100  — VERIFY_UPSTREAM: no local code stored for this attempt (upstream
+                deduped send-code); caller must validate via register/clientSignUp
+                and then call ``finalize_upstream_result``. The not-found / expired
+                / locked pre-checks above have already passed when this is returned.
     Wrong attempts increment fail_count; once it hits exhaust_after every
     subsequent call returns -3, even with the correct code. The caller is
     expected to ask the user to /send-code again.
@@ -196,6 +217,10 @@ async def match_by_trace(
         age = datetime.utcnow() - row.created_at
         if age > timedelta(seconds=ttl_seconds):
             return -2, f"verification code expired ({int(age.total_seconds())}s old)", row.phone
+        if row.code == "":
+            # No local code (dedup): defer to upstream clientSignUp. fail_count is
+            # bumped by finalize_upstream_result once we know the upstream verdict.
+            return VERIFY_UPSTREAM, "verify via upstream", row.phone
         if str(code).strip() != row.code:
             row.fail_count += 1
             await session.commit()
@@ -204,3 +229,37 @@ async def match_by_trace(
             remaining = exhaust_after - row.fail_count
             return 7104, f"verification code mismatch ({remaining} attempts left)", row.phone
         return 0, "success", row.phone
+
+
+async def finalize_upstream_result(
+    session_factory: async_sessionmaker,
+    trace_id: str,
+    upstream_code: int,
+    upstream_msg: str,
+    exhaust_after: int = EXHAUST_AFTER,
+) -> tuple[int, str, str]:
+    """Apply the upstream clientSignUp verdict to the attempt row.
+
+    Called by /verify-code only after ``match_by_trace`` returned
+    ``VERIFY_UPSTREAM`` (so the row exists, isn't expired, isn't locked).
+
+    - upstream_code == 0     → (0, "success", phone)  [account got registered]
+    - upstream_code == 7104  → bump fail_count, return mismatch/locked like the
+                               local path so callers see one consistent contract
+    - anything else          → surface the upstream code/msg verbatim (e.g. the
+                               number is already registered, or an invalid phone)
+    """
+    async with session_factory() as session:
+        row = await session.get(VerificationAttempt, trace_id)
+        if row is None:  # raced away between calls — treat as not found
+            return -1, "trace_id not found", ""
+        if upstream_code == 0:
+            return 0, "success", row.phone
+        if upstream_code == 7104:
+            row.fail_count += 1
+            await session.commit()
+            if row.fail_count >= exhaust_after:
+                return -3, "too many failed attempts; request a new code", row.phone
+            remaining = exhaust_after - row.fail_count
+            return 7104, f"verification code mismatch ({remaining} attempts left)", row.phone
+        return upstream_code, upstream_msg or "upstream rejected the code", row.phone

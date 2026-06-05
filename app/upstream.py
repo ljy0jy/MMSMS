@@ -98,3 +98,35 @@ async def send_sms_code(
     )
 
 
+async def sign_up(
+    client: httpx.AsyncClient,
+    base_url: str,
+    phone: str,
+    code: str,
+    password: str,
+    device_envelope: dict[str, Any],
+) -> dict[str, Any]:
+    """POST ``register/clientSignUp`` — the upstream's real code check.
+
+    This is the only upstream endpoint that validates a verification *code*:
+    ``wjmgawm == 0`` means the code matched, ``7104`` means it was wrong. It is
+    used as the fallback for ``/verify-code`` when ``/send-code`` issued no local
+    code (upstream dedup — see main.send_code).
+
+    SIDE EFFECT: on a correct code the upstream actually *registers* the account
+    with ``password``. We only fall back to this when we genuinely have no local
+    code to compare against, so a correct code already implies the caller intends
+    to proceed with that number.
+
+    Field mapping (from the apk, decrypted): bnn=code, semvjnx=phone,
+    xpuesdg=password.
+    """
+    return await call(
+        client,
+        base_url,
+        "register/clientSignUp",
+        {"bnn": code, "semvjnx": phone, "xpuesdg": password},
+        device_envelope,
+    )
+
+

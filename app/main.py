@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.9.0", lifespan=lifespan)
 
 
 @asynccontextmanager
@@ -199,12 +199,17 @@ async def send_code(req: SendCodeRequest) -> SendCodeResponse:
 
     decoded = await _with_proxy_retry(req.phone, _do)
 
-    issued = (decoded.get("atkjtu") or {}).get("twwxfuya")
-    trace_id: str | None = None
-    if issued is not None:
-        trace_id = await devices.record_attempt(app.state.db_session, req.phone, str(issued))
-
     base = _wrap(decoded)
+
+    # Always hand back a usable trace_id when the upstream accepted the request,
+    # even on dedup (no fresh twwxfuya). When a code was issued we store it for a
+    # local compare; when it wasn't, we store an empty code so /verify-code knows
+    # to fall back to the upstream clientSignUp check instead.
+    trace_id: str | None = None
+    if base.success:
+        issued = (decoded.get("atkjtu") or {}).get("twwxfuya")
+        code_str = str(issued) if issued is not None else ""
+        trace_id = await devices.record_attempt(app.state.db_session, req.phone, code_str)
     return SendCodeResponse(
         code=base.code, msg=base.msg, success=base.success,
         trace_id=trace_id, raw=base.raw,
@@ -213,15 +218,46 @@ async def send_code(req: SendCodeRequest) -> SendCodeResponse:
 
 @app.post("/verify-code", response_model=VerifyCodeResponse)
 async def verify_code(req: VerifyCodeRequest) -> VerifyCodeResponse:
-    """本地校验：用 send-code 返回的 trace_id 找到对应 attempt，比对 code。
+    """校验：用 send-code 返回的 trace_id 找到对应 attempt，比对 code。
 
-    不调用任何上游接口，**不会真注册账号**。校验成功只代表"该 trace_id 在 10
-    分钟内对应的验证码与传入 code 一致"，业务侧再决定要不要走真注册。
+    两条路径：
+    - **本地比对**（默认）：send-code 当时拿到了验证码（twwxfuya），存了下来，这里
+      纯本地比对，不打上游、**不会注册账号**。
+    - **上游校验**（回退）：send-code 因上游 dedup 没下发新码（twwxfuya 缺失），本地
+      没有可比对的码。此时打上游 register/clientSignUp 让上游判定验证码对错
+      （wjmgawm 0=对 / 7104=错）。**注意：码正确时上游会真注册该号**——只有在本地
+      确实无码可比时才会走到这里。
     """
     rc, msg, phone = await devices.match_by_trace(
         app.state.db_session, req.trace_id, req.code
     )
+    if rc != devices.VERIFY_UPSTREAM:
+        return VerifyCodeResponse(
+            code=rc, msg=msg, success=rc == 0,
+            phone=phone or None,
+        )
+
+    # Fallback: no local code for this trace_id — ask upstream to judge the code.
+    # Mirrors the apk's pre-call (verify-user-account) then register/clientSignUp,
+    # all egressing through the same phone-scoped proxy IP.
+    password = devices.generate_password()
+
+    async def _do(http: httpx.AsyncClient, base_url: str) -> dict[str, Any]:
+        device = await devices.get_or_create_device(
+            app.state.db_session, http, phone, base_url
+        )
+        await upstream.verify_user_account(http, base_url, phone, 1, device)
+        return await upstream.sign_up(
+            http, base_url, phone, req.code, password, device
+        )
+
+    decoded = await _with_proxy_retry(phone, _do)
+    upstream_code = int(decoded.get("wjmgawm", -1))
+    upstream_msg = str(decoded.get("yftkram", ""))
+    frc, fmsg, fphone = await devices.finalize_upstream_result(
+        app.state.db_session, req.trace_id, upstream_code, upstream_msg
+    )
     return VerifyCodeResponse(
-        code=rc, msg=msg, success=rc == 0,
-        phone=phone or None,
+        code=frc, msg=fmsg, success=frc == 0,
+        phone=fphone or None,
     )

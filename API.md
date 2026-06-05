@@ -75,7 +75,7 @@
 | `code` | int | 上游 `wjmgawm`，**`0` 即成功** |
 | `msg` | string | 上游 `yftkram`，错误时是缅甸语原文 |
 | `success` | bool | `code == 0` |
-| `trace_id` | string \| null | **本次发码的 uuid，调用 `/verify-code` 时必传**；上游 dedup 没下发新码时为 `null`（调用方应该用上一次的 trace_id） |
+| `trace_id` | string \| null | **本次发码的 uuid，调用 `/verify-code` 时必传**；上游接受请求即返回（成功时一定非 `null`）。上游 dedup 没下发新码（`raw.atkjtu` 无 `twwxfuya`）时也会返回 trace_id——这种 trace_id 在 `/verify-code` 时走「上游校验」路径（见下）。只有 `success == false` 时为 `null` |
 | `raw` | object | 上游解密后的完整响应（验证码本身在 `raw.atkjtu.twwxfuya`） |
 
 ### 错误响应
@@ -98,7 +98,10 @@ curl -X POST http://54.179.197.66:8002/send-code \
 
 ## `POST /verify-code`
 
-校验调用方收到的验证码。**纯本地比对**，不调用上游、不会注册账号。
+校验调用方收到的验证码。有两条路径，由 send-code 当时是否拿到验证码自动决定：
+
+- **本地比对**（默认）：send-code 拿到了 `twwxfuya` 并存了下来 → 纯本地比对，不调用上游、**不会注册账号**。
+- **上游校验**（回退）：send-code 因上游 dedup 没下发新码 → 本地无码可比，自动打上游 `register/clientSignUp` 让上游判定对错。**⚠️ 验证码正确时上游会真注册该手机号**（用一个随机密码）。只有在本地确实拿不到码时才会走这条路径。
 
 ### Request
 
@@ -141,6 +144,9 @@ curl -X POST http://54.179.197.66:8002/send-code \
 | `-1` | false | trace_id 找不到 | trace_id 无效，让用户重新发码 |
 | `-2` | false | trace_id 过期 | 距离发码已超过 **30 分钟**，让用户重新发码 |
 | `-3` | false | 错误次数过多 | 同一 trace_id 连续输错 ≥ 5 次后锁死，**即使后面输对也返 -3**，让用户重新发码 |
+| 其他正整数 | false | 上游 clientSignUp 直接拒绝 | 仅「上游校验」路径出现，如号码已注册/非法等；`msg` 是上游缅甸语原文 |
+
+> 上游校验路径下，`code`/`msg` 的 `0` 与 `7104` 含义与本地路径一致（已统一收敛）；其余非零值是上游 `clientSignUp` 的原始返回。
 
 ### Example
 
@@ -274,6 +280,7 @@ elif r["code"] == -3:
 
 | Version | Notes |
 |---|---|
+| 0.9.0 | dedup（无 twwxfuya）也返回 trace_id；`/verify-code` 对这类 trace_id 回退打上游 `register/clientSignUp` 校验验证码（码对会真注册） |
 | 0.8.0 | TTL 10min→30min；新增 fail_count + `-3` "trace_id 锁死"状态 |
 | 0.7.2 | 拆分 httpx timeout（connect=5s/read=15s），代理失败重试更快 |
 | 0.7.1 | 代理连接失败 invalidate + rotate 重试 1 次 |
