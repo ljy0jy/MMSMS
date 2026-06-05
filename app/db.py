@@ -65,6 +65,28 @@ class VerificationAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class UpstreamLog(Base):
+    """One row per upstream (third-party API) HTTP call.
+
+    Captures the *decrypted* request payload and response so issues like
+    "user got the right code but verify failed" can be traced after the fact —
+    the wire traffic is AES-encrypted, so without this there's nothing to read.
+    Logging is best-effort: a failure to write a row never breaks the request.
+    """
+    __tablename__ = "upstream_logs"
+
+    id:          Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    phone:       Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    path:        Mapped[str]      = mapped_column(String(64))
+    status:      Mapped[int | None] = mapped_column(Integer, nullable=True)  # HTTP status
+    biz_code:    Mapped[int | None] = mapped_column(Integer, nullable=True)  # upstream wjmgawm
+    req:         Mapped[str]      = mapped_column(Text)   # decrypted request payload (vhhwl)
+    resp:        Mapped[str]      = mapped_column(Text)   # decrypted response, or raw body on error
+    error:       Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 def make_engine_and_session() -> tuple:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set; populate proxy/.env or export it.")

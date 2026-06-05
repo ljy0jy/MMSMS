@@ -255,6 +255,13 @@ async def finalize_upstream_result(
             return -1, "trace_id not found", ""
         if upstream_code == 0:
             return 0, "success", row.phone
+        if upstream_code == 7103:
+            # Upstream "code expired" (ကုဒ်သက်တမ်းကုန်ဆုံး). Collapse onto our local
+            # -2 expired so callers see one contract regardless of path — the SMS
+            # OTP lapsed upstream (it lives only a few minutes there). Don't bump
+            # fail_count: it's not a wrong guess, it's a dead code; the caller
+            # should /send-code again.
+            return -2, "verification code expired (upstream)", row.phone
         if upstream_code == 7104:
             row.fail_count += 1
             await session.commit()

@@ -7,10 +7,11 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import desc, select
 
 from . import devices, upstream
 from .config import BASE_URL_FALLBACK, UPSTREAM_PROXY_API, UPSTREAM_VERIFY
-from .db import get_config, init_schema, make_engine_and_session, seed_config
+from .db import UpstreamLog, get_config, init_schema, make_engine_and_session, seed_config
 
 
 @asynccontextmanager
@@ -20,13 +21,14 @@ async def lifespan(app: FastAPI):
     await seed_config(engine, "upstream_base_url", BASE_URL_FALLBACK)
     app.state.db_engine = engine
     app.state.db_session = session_factory
+    upstream.configure_logging(session_factory)
     try:
         yield
     finally:
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.9.0", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.9.1", lifespan=lifespan)
 
 
 @asynccontextmanager
@@ -148,6 +150,43 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/upstream-logs")
+async def upstream_logs(phone: str | None = None, path: str | None = None, limit: int = 50) -> dict[str, Any]:
+    """Recent upstream (third-party API) calls, decrypted, newest first.
+
+    Filter by ``phone`` and/or ``path`` to chase a specific number's flow.
+    Handy for "user got the right code but verify failed" — you can read exactly
+    what text-user/transfer and register/clientSignUp returned for that phone.
+    """
+    limit = max(1, min(limit, 500))
+    sf = app.state.db_session
+    async with sf() as session:
+        stmt = select(UpstreamLog).order_by(desc(UpstreamLog.id)).limit(limit)
+        if phone:
+            stmt = stmt.where(UpstreamLog.phone == phone)
+        if path:
+            stmt = stmt.where(UpstreamLog.path.like(f"%{path}%"))
+        rows = (await session.execute(stmt)).scalars().all()
+    return {
+        "count": len(rows),
+        "logs": [
+            {
+                "id": r.id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "phone": r.phone,
+                "path": r.path,
+                "status": r.status,
+                "biz_code": r.biz_code,
+                "req": r.req,
+                "resp": r.resp,
+                "error": r.error,
+                "duration_ms": r.duration_ms,
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.post("/verify", response_model=VerifyResponse)
 async def verify(req: VerifyRequest) -> VerifyResponse:
     async def _do(http: httpx.AsyncClient, base_url: str) -> dict[str, Any]:
@@ -208,7 +247,11 @@ async def send_code(req: SendCodeRequest) -> SendCodeResponse:
     trace_id: str | None = None
     if base.success:
         issued = (decoded.get("atkjtu") or {}).get("twwxfuya")
-        code_str = str(issued) if issued is not None else ""
+        # twwxfuya arrives as a JSON int, so a 4-digit code that starts with a
+        # zero (e.g. 0820) loses its leading zero when stringified -> "820", and
+        # then never matches the 4-digit code the user types off the SMS. Myanmar
+        # OTPs are always 4 digits, so pad back to width 4.
+        code_str = str(issued).zfill(4) if issued is not None else ""
         trace_id = await devices.record_attempt(app.state.db_session, req.phone, code_str)
     return SendCodeResponse(
         code=base.code, msg=base.msg, success=base.success,

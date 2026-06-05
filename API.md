@@ -142,7 +142,7 @@ curl -X POST http://54.179.197.66:8002/send-code \
 | `0` | true | 验证码正确 | 走业务流程 |
 | `7104` | false | 验证码错误 | 提示用户重新输入；`msg` 里会带 "(N attempts left)" |
 | `-1` | false | trace_id 找不到 | trace_id 无效，让用户重新发码 |
-| `-2` | false | trace_id 过期 | 距离发码已超过 **30 分钟**，让用户重新发码 |
+| `-2` | false | 验证码过期 | 本地路径：距离发码超过 **30 分钟**；上游校验路径：上游返回 `7103`（ကုဒ်သက်တမ်းကုန်ဆုံး，码在上游已失效，通常只活几分钟）。两者都收敛成 `-2`，让用户重新发码 |
 | `-3` | false | 错误次数过多 | 同一 trace_id 连续输错 ≥ 5 次后锁死，**即使后面输对也返 -3**，让用户重新发码 |
 | 其他正整数 | false | 上游 clientSignUp 直接拒绝 | 仅「上游校验」路径出现，如号码已注册/非法等；`msg` 是上游缅甸语原文 |
 
@@ -280,6 +280,7 @@ elif r["code"] == -3:
 
 | Version | Notes |
 |---|---|
+| 0.9.1 | 新增 `upstream_logs` 表 + `GET /upstream-logs`（落库每次上游调用的解密请求/响应）；上游 `7103`（码过期）收敛成 `-2`；send-code 存码补前导零（`zfill(4)`） |
 | 0.9.0 | dedup（无 twwxfuya）也返回 trace_id；`/verify-code` 对这类 trace_id 回退打上游 `register/clientSignUp` 校验验证码（码对会真注册） |
 | 0.8.0 | TTL 10min→30min；新增 fail_count + `-3` "trace_id 锁死"状态 |
 | 0.7.2 | 拆分 httpx timeout（connect=5s/read=15s），代理失败重试更快 |
