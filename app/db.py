@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import DateTime, Integer, String, Text, func, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -61,6 +61,11 @@ class VerificationAttempt(Base):
     trace_id:   Mapped[str]      = mapped_column(String(40), primary_key=True)
     phone:      Mapped[str]      = mapped_column(String(32), index=True)
     code:       Mapped[str]      = mapped_column(String(16))
+    # Which upstream flow this attempt belongs to: "register" (new account,
+    # verified via register/clientSignUp) or "reset" (phone already registered,
+    # verified via account/userPass/refresh). Decides which endpoint /verify-code
+    # hits on the VERIFY_UPSTREAM path. Defaults to "register" for back-compat.
+    flow:       Mapped[str]      = mapped_column(String(16), default="register", server_default="register")
     fail_count: Mapped[int]      = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -95,11 +100,32 @@ def make_engine_and_session() -> tuple:
     return engine, session
 
 
+# Lightweight additive migrations applied on every startup. The deploy pipeline
+# has no migration tool and relies on create_all, which never ALTERs an existing
+# table — so a column added to an existing model (e.g. verification_attempts.flow
+# in 0.10.0) must be backfilled here. Each entry is run in its own transaction and
+# any "column already exists" error is swallowed, making this idempotent on both a
+# fresh DB (create_all already added the column) and an old one (we add it).
+_ADD_COLUMN_MIGRATIONS: list[str] = [
+    "ALTER TABLE verification_attempts ADD COLUMN flow VARCHAR(16) NOT NULL DEFAULT 'register'",
+]
+
+
 async def init_schema(engine) -> None:
-    """Create the tables if they don't exist. The database itself must
-    already exist — we don't try CREATE DATABASE since that needs elevated perms."""
+    """Create the tables if they don't exist, then apply additive migrations.
+
+    The database itself must already exist — we don't try CREATE DATABASE since
+    that needs elevated perms."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    for ddl in _ADD_COLUMN_MIGRATIONS:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(ddl))
+        except Exception:
+            # Column already present (fresh DB or prior run) — additive migration
+            # is idempotent, so a duplicate-column error is expected and ignored.
+            pass
 
 
 async def seed_config(engine, key: str, value: str) -> None:

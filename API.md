@@ -280,6 +280,7 @@ elif r["code"] == -3:
 
 | Version | Notes |
 |---|---|
+| 0.10.0 | **已注册号自动走重置流程**：`/send-code` 先看 `verify-user-account` 的 `dclogpot`，`==1`（号已注册）时改用 `finished-check/status` + `account/password/reset-text-service` 发重置短信；`/verify-code` 对这类 trace_id 走上游 `account/userPass/refresh` 校验验证码，**码对会用随机密码重置该号密码**（而非注册）。`verification_attempts` 新增 `flow` 列（`register`/`reset`），启动时 `init_schema` 自动幂等补列（无需手动 ALTER）。 |
 | 0.9.1 | 新增 `upstream_logs` 表 + `GET /upstream-logs`（落库每次上游调用的解密请求/响应）；上游 `7103`（码过期）收敛成 `-2`；send-code 存码补前导零（`zfill(4)`） |
 | 0.9.0 | dedup（无 twwxfuya）也返回 trace_id；`/verify-code` 对这类 trace_id 回退打上游 `register/clientSignUp` 校验验证码（码对会真注册） |
 | 0.8.0 | TTL 10min→30min；新增 fail_count + `-3` "trace_id 锁死"状态 |

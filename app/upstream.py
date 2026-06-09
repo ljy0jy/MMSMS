@@ -32,9 +32,11 @@ def _phone_of(payload: dict[str, Any]) -> str | None:
 
     Different upstream endpoints name the phone field differently:
     yfckb (text-user/transfer), semvjnx (clientSignUp), yxzjgupo
-    (verify-user-account). apparatus-make carries no phone.
+    (verify-user-account), zeh (password/reset-text-service), gxfvfnij
+    (userPass/refresh), mqu (finished-check/status). apparatus-make carries
+    no phone.
     """
-    for k in ("yfckb", "semvjnx", "yxzjgupo"):
+    for k in ("yfckb", "semvjnx", "yxzjgupo", "zeh", "gxfvfnij", "mqu"):
         v = payload.get(k)
         if v:
             return str(v)
@@ -188,6 +190,83 @@ async def send_sms_code(
         base_url,
         "text-user/transfer",
         {"yfckb": phone, "ptawbtaq": channel},
+        device_envelope,
+    )
+
+
+async def finished_check(
+    client: httpx.AsyncClient,
+    base_url: str,
+    phone: str,
+    device_envelope: dict[str, Any],
+) -> dict[str, Any]:
+    """POST ``finished-check/status`` — the reset flow's "number warm-up" pre-call.
+
+    The apk fires this (after verify-user-account) right before
+    password/reset-text-service. Mirrored here so the upstream actually delivers
+    the reset SMS; the response itself is not consumed. Field mapping: mqu=phone.
+    """
+    return await call(
+        client,
+        base_url,
+        "finished-check/status",
+        {"mqu": phone},
+        device_envelope,
+    )
+
+
+async def send_reset_code(
+    client: httpx.AsyncClient,
+    base_url: str,
+    phone: str,
+    channel: str,
+    device_envelope: dict[str, Any],
+) -> dict[str, Any]:
+    """POST ``account/password/reset-text-service`` — send a *password-reset* SMS code.
+
+    The reset-flow counterpart of ``send_sms_code``. Used when the number is
+    already registered (verify-user-account ``dclogpot == 1``). Unlike
+    text-user/transfer, the response does NOT leak the code (no ``twwxfuya``),
+    so the code can only be checked by hitting userPass/refresh upstream. Field
+    mapping (from the apk, decrypted): zeh=phone, rpcatd=channel.
+    """
+    return await call(
+        client,
+        base_url,
+        "account/password/reset-text-service",
+        {"zeh": phone, "rpcatd": channel},
+        device_envelope,
+    )
+
+
+async def reset_password(
+    client: httpx.AsyncClient,
+    base_url: str,
+    phone: str,
+    code: str,
+    password: str,
+    device_envelope: dict[str, Any],
+) -> dict[str, Any]:
+    """POST ``account/userPass/refresh`` — the reset flow's real code check.
+
+    The reset-flow counterpart of ``sign_up``: validates the reset SMS code and,
+    when correct, sets the account password to ``password``. ``wjmgawm == 0``
+    means the code matched, ``7104`` means it was wrong (same convention as
+    clientSignUp). Used as the verification step for /verify-code when the
+    attempt's flow is "reset".
+
+    SIDE EFFECT: on a correct code the account's password is actually reset to
+    ``password``. Since the reset SMS never leaks the code locally, this upstream
+    call is the only way to judge it.
+
+    Field mapping (from the apk, decrypted): yzdliul=new password, zzbdhlt=code,
+    gxfvfnij=phone.
+    """
+    return await call(
+        client,
+        base_url,
+        "account/userPass/refresh",
+        {"yzdliul": password, "zzbdhlt": code, "gxfvfnij": phone},
         device_envelope,
     )
 

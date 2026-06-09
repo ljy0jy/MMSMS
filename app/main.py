@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="MMSMS proxy", version="0.9.1", lifespan=lifespan)
+app = FastAPI(title="MMSMS proxy", version="0.10.0", lifespan=lifespan)
 
 
 @asynccontextmanager
@@ -227,23 +227,38 @@ async def send_code(req: SendCodeRequest) -> SendCodeResponse:
     cached proxy is invalidated and the entire sequence is retried once with
     a fresh IP.
     """
-    async def _do(http: httpx.AsyncClient, base_url: str) -> dict[str, Any]:
+    async def _do(http: httpx.AsyncClient, base_url: str) -> tuple[dict[str, Any], str]:
         device = await devices.get_or_create_device(
             app.state.db_session, http, req.phone, base_url
         )
-        await upstream.verify_user_account(http, base_url, req.phone, 1, device)
-        return await upstream.send_sms_code(
+        existence = await upstream.verify_user_account(
+            http, base_url, req.phone, 1, device
+        )
+        # dclogpot == 1 → the number is already registered, so a fresh sign-up
+        # would be rejected. Fall back to the password-reset flow instead: same
+        # SMS-OTP UX, but the code is delivered/validated via the reset endpoints.
+        atkjtu = existence.get("atkjtu")
+        registered = isinstance(atkjtu, dict) and atkjtu.get("dclogpot") == 1
+        if registered:
+            await upstream.finished_check(http, base_url, req.phone, device)
+            decoded = await upstream.send_reset_code(
+                http, base_url, req.phone, req.channel, device
+            )
+            return decoded, "reset"
+        decoded = await upstream.send_sms_code(
             http, base_url, req.phone, req.channel, device
         )
+        return decoded, "register"
 
-    decoded = await _with_proxy_retry(req.phone, _do)
+    decoded, flow = await _with_proxy_retry(req.phone, _do)
 
     base = _wrap(decoded)
 
     # Always hand back a usable trace_id when the upstream accepted the request,
     # even on dedup (no fresh twwxfuya). When a code was issued we store it for a
     # local compare; when it wasn't, we store an empty code so /verify-code knows
-    # to fall back to the upstream clientSignUp check instead.
+    # to fall back to the upstream check instead. The reset flow never leaks a
+    # code (no twwxfuya), so it always stores "" and validates via userPass/refresh.
     trace_id: str | None = None
     if base.success:
         issued = (decoded.get("atkjtu") or {}).get("twwxfuya")
@@ -252,7 +267,9 @@ async def send_code(req: SendCodeRequest) -> SendCodeResponse:
         # then never matches the 4-digit code the user types off the SMS. Myanmar
         # OTPs are always 4 digits, so pad back to width 4.
         code_str = str(issued).zfill(4) if issued is not None else ""
-        trace_id = await devices.record_attempt(app.state.db_session, req.phone, code_str)
+        trace_id = await devices.record_attempt(
+            app.state.db_session, req.phone, code_str, flow
+        )
     return SendCodeResponse(
         code=base.code, msg=base.msg, success=base.success,
         trace_id=trace_id, raw=base.raw,
@@ -265,11 +282,13 @@ async def verify_code(req: VerifyCodeRequest) -> VerifyCodeResponse:
 
     两条路径：
     - **本地比对**（默认）：send-code 当时拿到了验证码（twwxfuya），存了下来，这里
-      纯本地比对，不打上游、**不会注册账号**。
-    - **上游校验**（回退）：send-code 因上游 dedup 没下发新码（twwxfuya 缺失），本地
-      没有可比对的码。此时打上游 register/clientSignUp 让上游判定验证码对错
-      （wjmgawm 0=对 / 7104=错）。**注意：码正确时上游会真注册该号**——只有在本地
-      确实无码可比时才会走到这里。
+      纯本地比对，不打上游、**不会注册/重置账号**。
+    - **上游校验**（回退）：本地没有可比对的码（register 流程 dedup 没下发新码，或
+      reset 流程本就不下发 twwxfuya）。此时打上游让其判定验证码对错（wjmgawm 0=对 /
+      7104=错），按 send-code 记下的 flow 选端点：
+        - `register` → register/clientSignUp，**码对会用随机密码真注册该号**
+        - `reset`    → account/userPass/refresh，**码对会用随机密码重置该号密码**
+      只有在本地确实无码可比时才会走到这里。
     """
     rc, msg, phone = await devices.match_by_trace(
         app.state.db_session, req.trace_id, req.code
@@ -281,15 +300,23 @@ async def verify_code(req: VerifyCodeRequest) -> VerifyCodeResponse:
         )
 
     # Fallback: no local code for this trace_id — ask upstream to judge the code.
-    # Mirrors the apk's pre-call (verify-user-account) then register/clientSignUp,
-    # all egressing through the same phone-scoped proxy IP.
+    # Two upstream endpoints depending on the flow recorded at /send-code time:
+    #   register → register/clientSignUp (registers the account on a correct code)
+    #   reset    → account/userPass/refresh (resets the password on a correct code)
+    # Both take a random throwaway password and egress through the same
+    # phone-scoped proxy IP, behind the apk's verify-user-account pre-call.
     password = devices.generate_password()
+    flow = await devices.get_attempt_flow(app.state.db_session, req.trace_id)
 
     async def _do(http: httpx.AsyncClient, base_url: str) -> dict[str, Any]:
         device = await devices.get_or_create_device(
             app.state.db_session, http, phone, base_url
         )
         await upstream.verify_user_account(http, base_url, phone, 1, device)
+        if flow == "reset":
+            return await upstream.reset_password(
+                http, base_url, phone, req.code, password, device
+            )
         return await upstream.sign_up(
             http, base_url, phone, req.code, password, device
         )

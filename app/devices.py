@@ -171,18 +171,35 @@ async def get_or_create_device(
 
 
 async def record_attempt(
-    session_factory: async_sessionmaker, phone: str, code: str
+    session_factory: async_sessionmaker, phone: str, code: str, flow: str = "register"
 ) -> str:
     """Persist a verification attempt and return its trace_id (uuid4).
 
     Caller surfaces the trace_id in the /send-code response; /verify-code
-    uses it to look the row back up.
+    uses it to look the row back up. ``flow`` is "register" or "reset" and tells
+    /verify-code which upstream endpoint to validate against on the
+    VERIFY_UPSTREAM path (clientSignUp vs userPass/refresh).
     """
     trace_id = str(uuid.uuid4())
     async with session_factory() as session:
-        session.add(VerificationAttempt(trace_id=trace_id, phone=phone, code=code))
+        session.add(VerificationAttempt(trace_id=trace_id, phone=phone, code=code, flow=flow))
         await session.commit()
     return trace_id
+
+
+async def get_attempt_flow(
+    session_factory: async_sessionmaker, trace_id: str
+) -> str:
+    """Return the stored flow ("register"/"reset") for *trace_id*.
+
+    Used by /verify-code on the VERIFY_UPSTREAM path to pick the upstream
+    verification endpoint. Falls back to "register" if the row is missing
+    (match_by_trace has already validated existence by the time we call this,
+    so this is just a defensive default).
+    """
+    async with session_factory() as session:
+        row = await session.get(VerificationAttempt, trace_id)
+        return row.flow if row and row.flow else "register"
 
 
 async def match_by_trace(
