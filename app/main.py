@@ -285,9 +285,10 @@ async def verify_code(req: VerifyCodeRequest) -> VerifyCodeResponse:
       纯本地比对，不打上游、**不会注册/重置账号**。
     - **上游校验**（回退）：本地没有可比对的码（register 流程 dedup 没下发新码，或
       reset 流程本就不下发 twwxfuya）。此时打上游让其判定验证码对错（wjmgawm 0=对 /
-      7104=错），按 send-code 记下的 flow 选端点：
-        - `register` → register/clientSignUp，**码对会用随机密码真注册该号**
-        - `reset`    → account/userPass/refresh，**码对会用随机密码重置该号密码**
+      7104=错）。两条 flow 都打 account/userPass/refresh 校验：
+        - `register` → **码对会用随机密码刷新该号（已注册号 clientSignUp 不再返回 0，
+          故统一走 userPass/refresh）**
+        - `reset`    → **码对会用随机密码重置该号密码**
       只有在本地确实无码可比时才会走到这里。
     """
     rc, msg, phone = await devices.match_by_trace(
@@ -300,11 +301,14 @@ async def verify_code(req: VerifyCodeRequest) -> VerifyCodeResponse:
         )
 
     # Fallback: no local code for this trace_id — ask upstream to judge the code.
-    # Two upstream endpoints depending on the flow recorded at /send-code time:
-    #   register → register/clientSignUp (registers the account on a correct code)
-    #   reset    → account/userPass/refresh (resets the password on a correct code)
-    # Both take a random throwaway password and egress through the same
-    # phone-scoped proxy IP, behind the apk's verify-user-account pre-call.
+    # Both flows validate via account/userPass/refresh (the apk's real "code →
+    # token" step): it returns wjmgawm 0 for a correct code regardless of whether
+    # the number is brand-new or already registered. We used to call
+    # register/clientSignUp on the register flow, but that only returns 0 for a
+    # never-seen number — once the number exists it stops returning success even
+    # for a correct code ("接口没返回成功"). Both take a random throwaway password
+    # and egress through the same phone-scoped proxy IP, behind the apk's
+    # verify-user-account pre-call.
     password = devices.generate_password()
     flow = await devices.get_attempt_flow(app.state.db_session, req.trace_id)
 
@@ -317,7 +321,7 @@ async def verify_code(req: VerifyCodeRequest) -> VerifyCodeResponse:
             return await upstream.reset_password(
                 http, base_url, phone, req.code, password, device
             )
-        return await upstream.sign_up(
+        return await upstream.verify_code_upstream(
             http, base_url, phone, req.code, password, device
         )
 

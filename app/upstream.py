@@ -271,7 +271,7 @@ async def reset_password(
     )
 
 
-async def sign_up(
+async def verify_code_upstream(
     client: httpx.AsyncClient,
     base_url: str,
     phone: str,
@@ -279,26 +279,31 @@ async def sign_up(
     password: str,
     device_envelope: dict[str, Any],
 ) -> dict[str, Any]:
-    """POST ``register/clientSignUp`` — the upstream's real code check.
+    """POST ``account/userPass/refresh`` — the apk's real "code → token" step.
 
-    This is the only upstream endpoint that validates a verification *code*:
-    ``wjmgawm == 0`` means the code matched, ``7104`` means it was wrong. It is
-    used as the fallback for ``/verify-code`` when ``/send-code`` issued no local
-    code (upstream dedup — see main.send_code).
+    This is the endpoint ``ApiService.H`` that the apk's register / set-password
+    flow uses to validate the SMS code: it takes (phone, password, code) and on a
+    correct code returns ``wjmgawm == 0`` plus ``atkjtu.kvva`` (an auth token).
+    A wrong code comes back as ``7104``. Used as the fallback for ``/verify-code``
+    when ``/send-code`` issued no local code (upstream dedup — see main.send_code).
 
-    SIDE EFFECT: on a correct code the upstream actually *registers* the account
-    with ``password``. We only fall back to this when we genuinely have no local
-    code to compare against, so a correct code already implies the caller intends
-    to proceed with that number.
+    We prefer this over ``register/clientSignUp``: clientSignUp only succeeds for a
+    brand-new registration, so once the number exists it stops returning 0 even
+    for a correct code ("接口没返回成功"). userPass/refresh validates the code
+    regardless and hands back a token.
 
-    Field mapping (from the apk, decrypted): bnn=code, semvjnx=phone,
-    xpuesdg=password.
+    SIDE EFFECT: on a correct code the upstream sets/refreshes the account's
+    password to ``password``. We only reach here when there is genuinely no local
+    code to compare against.
+
+    Field mapping (apk KyAccountRegisterActivity, decrypted):
+    gxfvfnij=phone, yzdliul=password, zzbdhlt=code.
     """
     return await call(
         client,
         base_url,
-        "register/clientSignUp",
-        {"bnn": code, "semvjnx": phone, "xpuesdg": password},
+        "account/userPass/refresh",
+        {"gxfvfnij": phone, "yzdliul": password, "zzbdhlt": code},
         device_envelope,
     )
 

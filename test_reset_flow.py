@@ -52,8 +52,8 @@ def _stub_upstream(*, registered: bool, leak_code: str | None, correct_code: str
         return {"wjmgawm": 0, "yftkram": "success",
                 "atkjtu": {"zpleg": channel, "owb": 0}}
 
-    async def sign_up(client, base_url, phone, code, password, env):
-        CALLS.append(("clientSignUp", {"phone": phone, "code": code, "password": password}))
+    async def verify_code_upstream(client, base_url, phone, code, password, env):
+        CALLS.append(("userPass/refresh", {"phone": phone, "code": code, "password": password}))
         ok = str(code) == correct_code
         return {"wjmgawm": 0, "yftkram": "success"} if ok \
             else {"wjmgawm": 7104, "yftkram": "wrong code"}
@@ -69,7 +69,7 @@ def _stub_upstream(*, registered: bool, leak_code: str | None, correct_code: str
     upstream.finished_check = finished_check
     upstream.send_sms_code = send_sms_code
     upstream.send_reset_code = send_reset_code
-    upstream.sign_up = sign_up
+    upstream.verify_code_upstream = verify_code_upstream
     upstream.reset_password = reset_password
 
 
