@@ -279,31 +279,37 @@ async def verify_code_upstream(
     password: str,
     device_envelope: dict[str, Any],
 ) -> dict[str, Any]:
-    """POST ``account/userPass/refresh`` — the apk's real "code → token" step.
+    """POST ``register/clientSignUp`` — the REGISTER flow's real SMS-code check.
 
-    This is the endpoint ``ApiService.H`` that the apk's register / set-password
-    flow uses to validate the SMS code: it takes (phone, password, code) and on a
-    correct code returns ``wjmgawm == 0`` plus ``atkjtu.kvva`` (an auth token).
-    A wrong code comes back as ``7104``. Used as the fallback for ``/verify-code``
-    when ``/send-code`` issued no local code (upstream dedup — see main.send_code).
+    This is what the apk fires to validate a *registration* OTP (captured in
+    denglu.har: after existence/verify-user-account returns dclogpot=0 and
+    text-user/transfer sends the code). It takes (code, phone, password) and on a
+    correct code returns ``wjmgawm == 0``; a wrong code comes back as ``7104``.
+    Used as the fallback for ``/verify-code`` on the *register* flow when
+    ``/send-code`` issued no local code (upstream dedup — see main.send_code).
 
-    We prefer this over ``register/clientSignUp``: clientSignUp only succeeds for a
-    brand-new registration, so once the number exists it stops returning 0 even
-    for a correct code ("接口没返回成功"). userPass/refresh validates the code
-    regardless and hands back a token.
+    Do NOT use ``account/userPass/refresh`` here: that is the RESET flow's endpoint
+    and only works on an already-registered number with an active reset-code
+    session. For a brand-new (unregistered) register-flow number it has nothing to
+    reset, so it returns 8100 ("no pending request") or 7104 and the correct code
+    can never pass — confirmed against prod: register-flow success via refresh was
+    ~1.3% (8100/7104 otherwise) vs ~67% for the reset flow. clientSignUp is the
+    right endpoint because register-flow numbers are unregistered by construction
+    (dclogpot=0 checked at send-code time); once a number exists the existence
+    check routes it to the reset flow instead.
 
-    SIDE EFFECT: on a correct code the upstream sets/refreshes the account's
-    password to ``password``. We only reach here when there is genuinely no local
-    code to compare against.
+    SIDE EFFECT: on a correct code the upstream registers the account with
+    ``password``. We only reach here when there is genuinely no local code to
+    compare against.
 
-    Field mapping (apk KyAccountRegisterActivity, decrypted):
-    gxfvfnij=phone, yzdliul=password, zzbdhlt=code.
+    Field mapping (apk register flow, denglu.har decrypted):
+    bnn=code, semvjnx=phone, xpuesdg=password.
     """
     return await call(
         client,
         base_url,
-        "account/userPass/refresh",
-        {"gxfvfnij": phone, "yzdliul": password, "zzbdhlt": code},
+        "register/clientSignUp",
+        {"bnn": code, "semvjnx": phone, "xpuesdg": password},
         device_envelope,
     )
 
